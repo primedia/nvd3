@@ -1,6 +1,6 @@
 {
   "name": "nvd3",
-  "version": "1.1.15-beta",
+  "version": "1.1.15-beta-primedia",
   "homepage": "http://www.nvd3.org",
   "authors": [
     "Bob Monteverde",
@@ -8,7 +8,7 @@
     "Robin Hu",
     "Frank Shao"
   ],
-  "description": "Re-usable charts and chart components for d3.",
+  "description": "Subset of re-usable charts and chart components (line and pie) for d3.",
   "main": ["nv.d3.js", "src/nv.d3.css"],
   "keywords": [
     "d3",
