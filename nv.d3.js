@@ -1,3 +1,4 @@
+define(['jquery', 'd3/d3'],function($){
 (function(){
 
 var nv = window.nv || {};
@@ -2395,4 +2396,5 @@ nv.models.pieChart = function() {
 
   return chart;
 }
-})();
+})()
+});
