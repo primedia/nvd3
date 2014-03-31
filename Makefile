@@ -2,6 +2,8 @@
 JS_FILES = \
 	src/intro.js \
 	src/core.js \
+	src/interactiveLayer.js \
+	src/tooltip.js \
 	src/utils.js \
 	src/models/axis.js \
 	src/models/legend.js \
@@ -9,6 +11,7 @@ JS_FILES = \
 	src/models/lineChart.js \
 	src/models/pie.js \
 	src/models/pieChart.js \
+	src/models/scatter.js \
 	src/outro.js
 CSS_FILES = \
 	src/nv.d3.css

@@ -125,6 +125,746 @@ d3.time.monthEnds = d3_time_range(d3.time.monthEnd, function(date) {
   }
 );
 
+/* Utility class to handle creation of an interactive layer.
+This places a rectangle on top of the chart. When you mouse move over it, it sends a dispatch
+containing the X-coordinate. It can also render a vertical line where the mouse is located.
+
+dispatch.elementMousemove is the important event to latch onto.  It is fired whenever the mouse moves over
+the rectangle. The dispatch is given one object which contains the mouseX/Y location.
+It also has 'pointXValue', which is the conversion of mouseX to the x-axis scale.
+*/
+nv.interactiveGuideline = function() {
+	"use strict";
+	var tooltip = nv.models.tooltip();
+	//Public settings
+	var width = null
+	, height = null
+    //Please pass in the bounding chart's top and left margins
+    //This is important for calculating the correct mouseX/Y positions.
+	, margin = {left: 0, top: 0}
+	, xScale = d3.scale.linear()
+	, yScale = d3.scale.linear()
+	, dispatch = d3.dispatch('elementMousemove', 'elementMouseout','elementDblclick')
+	, showGuideLine = true
+	, svgContainer = null  
+    //Must pass in the bounding chart's <svg> container.
+    //The mousemove event is attached to this container.
+	;
+
+	//Private variables
+	var isMSIE = navigator.userAgent.indexOf("MSIE") !== -1  //Check user-agent for Microsoft Internet Explorer.
+	;
+
+
+	function layer(selection) {
+		selection.each(function(data) {
+				var container = d3.select(this);
+				
+				var availableWidth = (width || 960), availableHeight = (height || 400);
+
+				var wrap = container.selectAll("g.nv-wrap.nv-interactiveLineLayer").data([data]);
+				var wrapEnter = wrap.enter()
+								.append("g").attr("class", " nv-wrap nv-interactiveLineLayer");
+								
+				
+				wrapEnter.append("g").attr("class","nv-interactiveGuideLine");
+				
+				if (!svgContainer) {
+					return;
+				}
+
+                function mouseHandler() {
+                      var d3mouse = d3.mouse(this);
+                      var mouseX = d3mouse[0];
+                      var mouseY = d3mouse[1];
+                      var subtractMargin = true;
+                      var mouseOutAnyReason = false;
+                      if (isMSIE) {
+                         /*
+                            D3.js (or maybe SVG.getScreenCTM) has a nasty bug in Internet Explorer 10.
+                            d3.mouse() returns incorrect X,Y mouse coordinates when mouse moving
+                            over a rect in IE 10.
+                            However, d3.event.offsetX/Y also returns the mouse coordinates
+                            relative to the triggering <rect>. So we use offsetX/Y on IE.  
+                         */
+                         mouseX = d3.event.offsetX;
+                         mouseY = d3.event.offsetY;
+
+                         /*
+                            On IE, if you attach a mouse event listener to the <svg> container,
+                            it will actually trigger it for all the child elements (like <path>, <circle>, etc).
+                            When this happens on IE, the offsetX/Y is set to where ever the child element
+                            is located.
+                            As a result, we do NOT need to subtract margins to figure out the mouse X/Y
+                            position under this scenario. Removing the line below *will* cause 
+                            the interactive layer to not work right on IE.
+                         */
+                         if(d3.event.target.tagName !== "svg")
+                            subtractMargin = false;
+
+                         if (d3.event.target.className.baseVal.match("nv-legend"))
+                         	mouseOutAnyReason = true;
+                          
+                      }
+
+                      if(subtractMargin) {
+                         mouseX -= margin.left;
+                         mouseY -= margin.top;
+                      }
+
+                      /* If mouseX/Y is outside of the chart's bounds,
+                      trigger a mouseOut event.
+                      */
+                      if (mouseX < 0 || mouseY < 0 
+                        || mouseX > availableWidth || mouseY > availableHeight
+                        || (d3.event.relatedTarget && d3.event.relatedTarget.ownerSVGElement === undefined)
+                        || mouseOutAnyReason
+                        ) 
+                      {
+                      		if (isMSIE) {
+                      			if (d3.event.relatedTarget 
+                      				&& d3.event.relatedTarget.ownerSVGElement === undefined
+                      				&& d3.event.relatedTarget.className.match(tooltip.nvPointerEventsClass)) {
+                      				return;
+                      			}
+                      		}
+                            dispatch.elementMouseout({
+                               mouseX: mouseX,
+                               mouseY: mouseY
+                            });
+                            layer.renderGuideLine(null); //hide the guideline
+                            return;
+                      }
+                      
+                      var pointXValue = xScale.invert(mouseX);
+                      dispatch.elementMousemove({
+                            mouseX: mouseX,
+                            mouseY: mouseY,
+                            pointXValue: pointXValue
+                      });
+
+                      //If user double clicks the layer, fire a elementDblclick dispatch.
+                      if (d3.event.type === "dblclick") {
+                        dispatch.elementDblclick({
+                            mouseX: mouseX,
+                            mouseY: mouseY,
+                            pointXValue: pointXValue
+                        });
+                      }
+                }
+
+				svgContainer
+				      .on("mousemove",mouseHandler, true)
+				      .on("mouseout" ,mouseHandler,true)
+                      .on("dblclick" ,mouseHandler)
+				      ;
+
+				 //Draws a vertical guideline at the given X postion.
+				layer.renderGuideLine = function(x) {
+				 	if (!showGuideLine) return;
+				 	var line = wrap.select(".nv-interactiveGuideLine")
+				 	      .selectAll("line")
+				 	      .data((x != null) ? [nv.utils.NaNtoZero(x)] : [], String);
+
+				 	line.enter()
+				 		.append("line")
+				 		.attr("class", "nv-guideline")
+				 		.attr("x1", function(d) { return d;})
+				 		.attr("x2", function(d) { return d;})
+				 		.attr("y1", availableHeight)
+				 		.attr("y2",0)
+				 		;
+				 	line.exit().remove();
+
+				}
+		});
+	}
+
+	layer.dispatch = dispatch;
+	layer.tooltip = tooltip;
+
+	layer.margin = function(_) {
+	    if (!arguments.length) return margin;
+	    margin.top    = typeof _.top    != 'undefined' ? _.top    : margin.top;
+	    margin.left   = typeof _.left   != 'undefined' ? _.left   : margin.left;
+	    return layer;
+    };
+
+	layer.width = function(_) {
+		if (!arguments.length) return width;
+		width = _;
+		return layer;
+	};
+
+	layer.height = function(_) {
+		if (!arguments.length) return height;
+		height = _;
+		return layer;
+	};
+
+	layer.xScale = function(_) {
+		if (!arguments.length) return xScale;
+		xScale = _;
+		return layer;
+	};
+
+	layer.showGuideLine = function(_) {
+		if (!arguments.length) return showGuideLine;
+		showGuideLine = _;
+		return layer;
+	};
+
+	layer.svgContainer = function(_) {
+		if (!arguments.length) return svgContainer;
+		svgContainer = _;
+		return layer;
+	};
+
+
+	return layer;
+};
+
+/* Utility class that uses d3.bisect to find the index in a given array, where a search value can be inserted.
+This is different from normal bisectLeft; this function finds the nearest index to insert the search value.
+
+For instance, lets say your array is [1,2,3,5,10,30], and you search for 28. 
+Normal d3.bisectLeft will return 4, because 28 is inserted after the number 10.  But interactiveBisect will return 5
+because 28 is closer to 30 than 10.
+
+Unit tests can be found in: interactiveBisectTest.html
+
+Has the following known issues:
+   * Will not work if the data points move backwards (ie, 10,9,8,7, etc) or if the data points are in random order.
+   * Won't work if there are duplicate x coordinate values.
+*/
+nv.interactiveBisect = function (values, searchVal, xAccessor) {
+	  "use strict";
+      if (! values instanceof Array) return null;
+      if (typeof xAccessor !== 'function') xAccessor = function(d,i) { return d.x;}
+
+      var bisect = d3.bisector(xAccessor).left;
+      var index = d3.max([0, bisect(values,searchVal) - 1]);
+      var currentValue = xAccessor(values[index], index);
+      if (typeof currentValue === 'undefined') currentValue = index;
+
+      if (currentValue === searchVal) return index;  //found exact match
+
+      var nextIndex = d3.min([index+1, values.length - 1]);
+      var nextValue = xAccessor(values[nextIndex], nextIndex);
+      if (typeof nextValue === 'undefined') nextValue = nextIndex;
+
+      if (Math.abs(nextValue - searchVal) >= Math.abs(currentValue - searchVal))
+          return index;
+      else
+          return nextIndex
+};
+
+/*
+Returns the index in the array "values" that is closest to searchVal.
+Only returns an index if searchVal is within some "threshold".
+Otherwise, returns null.
+*/
+nv.nearestValueIndex = function (values, searchVal, threshold) {
+      "use strict";
+      var yDistMax = Infinity, indexToHighlight = null;
+      values.forEach(function(d,i) {
+         var delta = Math.abs(searchVal - d);
+         if ( delta <= yDistMax && delta < threshold) {
+            yDistMax = delta;
+            indexToHighlight = i;
+         }
+      });
+      return indexToHighlight;
+};/* Tooltip rendering model for nvd3 charts.
+window.nv.models.tooltip is the updated,new way to render tooltips.
+
+window.nv.tooltip.show is the old tooltip code.
+window.nv.tooltip.* also has various helper methods.
+*/
+(function() {
+  "use strict";
+  window.nv.tooltip = {};
+
+  /* Model which can be instantiated to handle tooltip rendering.
+    Example usage: 
+    var tip = nv.models.tooltip().gravity('w').distance(23)
+                .data(myDataObject);
+
+        tip();    //just invoke the returned function to render tooltip.
+  */
+  window.nv.models.tooltip = function() {
+        var content = null    //HTML contents of the tooltip.  If null, the content is generated via the data variable.
+        ,   data = null     /* Tooltip data. If data is given in the proper format, a consistent tooltip is generated.
+        Format of data:
+        {
+            key: "Date",
+            value: "August 2009", 
+            series: [
+                    {
+                        key: "Series 1",
+                        value: "Value 1",
+                        color: "#000"
+                    },
+                    {
+                        key: "Series 2",
+                        value: "Value 2",
+                        color: "#00f"
+                    }
+            ]
+
+        }
+
+        */
+        ,   gravity = 'w'   //Can be 'n','s','e','w'. Determines how tooltip is positioned.
+        ,   distance = 50   //Distance to offset tooltip from the mouse location.
+        ,   snapDistance = 25   //Tolerance allowed before tooltip is moved from its current position (creates 'snapping' effect)
+        ,   fixedTop = null //If not null, this fixes the top position of the tooltip.
+        ,   classes = null  //Attaches additional CSS classes to the tooltip DIV that is created.
+        ,   chartContainer = null   //Parent DIV, of the SVG Container that holds the chart.
+        ,   tooltipElem = null  //actual DOM element representing the tooltip.
+        ,   position = {left: null, top: null}      //Relative position of the tooltip inside chartContainer.
+        ,   enabled = true  //True -> tooltips are rendered. False -> don't render tooltips.
+        //Generates a unique id when you create a new tooltip() object
+        ,   id = "nvtooltip-" + Math.floor(Math.random() * 100000)
+        ;
+
+        //CSS class to specify whether element should not have mouse events.
+        var  nvPointerEventsClass = "nv-pointer-events-none";
+
+        //Format function for the tooltip values column
+        var valueFormatter = function(d,i) {
+            return d;
+        };
+
+        //Format function for the tooltip header value.
+        var headerFormatter = function(d) {
+            return d;
+        };
+
+        //By default, the tooltip model renders a beautiful table inside a DIV.
+        //You can override this function if a custom tooltip is desired.
+        var contentGenerator = function(d) {
+            if (content != null) return content;
+
+            if (d == null) return '';
+
+            var table = d3.select(document.createElement("table"));
+            var theadEnter = table.selectAll("thead")
+                .data([d])
+                .enter().append("thead");
+            theadEnter.append("tr")
+                .append("td")
+                .attr("colspan",3)
+                .append("strong")
+                    .classed("x-value",true)
+                    .html(headerFormatter(d.value));
+
+            var tbodyEnter = table.selectAll("tbody")
+                .data([d])
+                .enter().append("tbody");
+            var trowEnter = tbodyEnter.selectAll("tr")
+                .data(function(p) { return p.series})
+                .enter()
+                .append("tr")
+                .classed("highlight", function(p) { return p.highlight})
+                ;
+
+            trowEnter.append("td")
+                .classed("legend-color-guide",true)
+                .append("div")
+                    .style("background-color", function(p) { return p.color});
+            trowEnter.append("td")
+                .classed("key",true)
+                .html(function(p) {return p.key});
+            trowEnter.append("td")
+                .classed("value",true)
+                .html(function(p,i) { return valueFormatter(p.value,i) });
+
+
+            trowEnter.selectAll("td").each(function(p) {
+                if (p.highlight) {
+                    var opacityScale = d3.scale.linear().domain([0,1]).range(["#fff",p.color]);
+                    var opacity = 0.6;
+                    d3.select(this)
+                        .style("border-bottom-color", opacityScale(opacity))
+                        .style("border-top-color", opacityScale(opacity))
+                        ;
+                }
+            });
+
+            var html = table.node().outerHTML;
+            if (d.footer !== undefined)
+                html += "<div class='footer'>" + d.footer + "</div>";
+            return html;
+
+        };
+
+        var dataSeriesExists = function(d) {
+            if (d && d.series && d.series.length > 0) return true;
+
+            return false;
+        };
+
+        //In situations where the chart is in a 'viewBox', re-position the tooltip based on how far chart is zoomed.
+        function convertViewBoxRatio() {
+            if (chartContainer) {
+              var svg = d3.select(chartContainer);
+              if (svg.node().tagName !== "svg") {
+                 svg = svg.select("svg");
+              }
+              var viewBox = (svg.node()) ? svg.attr('viewBox') : null;
+              if (viewBox) {
+                viewBox = viewBox.split(' ');
+                var ratio = parseInt(svg.style('width')) / viewBox[2];
+                
+                position.left = position.left * ratio;
+                position.top  = position.top * ratio;
+              }
+            }
+        }
+
+        //Creates new tooltip container, or uses existing one on DOM.
+        function getTooltipContainer(newContent) {
+            var body;
+            if (chartContainer)
+                body = d3.select(chartContainer);
+            else
+                body = d3.select("body");
+
+            var container = body.select(".nvtooltip");
+            if (container.node() === null) {
+                //Create new tooltip div if it doesn't exist on DOM.
+                container = body.append("div")
+                    .attr("class", "nvtooltip " + (classes? classes: "xy-tooltip"))
+                    .attr("id",id)
+                    ;
+            }
+        
+
+            container.node().innerHTML = newContent;
+            container.style("top",0).style("left",0).style("opacity",0);
+            container.selectAll("div, table, td, tr").classed(nvPointerEventsClass,true)
+            container.classed(nvPointerEventsClass,true);
+            return container.node();
+        }
+
+        
+
+        //Draw the tooltip onto the DOM.
+        function nvtooltip() {
+            if (!enabled) return;
+            if (!dataSeriesExists(data)) return;
+
+            convertViewBoxRatio();
+
+            var left = position.left;
+            var top = (fixedTop != null) ? fixedTop : position.top;
+            var container = getTooltipContainer(contentGenerator(data));
+            tooltipElem = container;
+            if (chartContainer) {
+                var svgComp = chartContainer.getElementsByTagName("svg")[0];
+                var boundRect = (svgComp) ? svgComp.getBoundingClientRect() : chartContainer.getBoundingClientRect();
+                var svgOffset = {left:0,top:0};
+                if (svgComp) {
+                    var svgBound = svgComp.getBoundingClientRect();
+                    var chartBound = chartContainer.getBoundingClientRect();
+                    var svgBoundTop = svgBound.top;
+                    
+                    //Defensive code. Sometimes, svgBoundTop can be a really negative
+                    //  number, like -134254. That's a bug. 
+                    //  If such a number is found, use zero instead. FireFox bug only
+                    if (svgBoundTop < 0) {
+                        var containerBound = chartContainer.getBoundingClientRect();
+                        svgBoundTop = (Math.abs(svgBoundTop) > containerBound.height) ? 0 : svgBoundTop;
+                    } 
+                    svgOffset.top = Math.abs(svgBoundTop - chartBound.top);
+                    svgOffset.left = Math.abs(svgBound.left - chartBound.left);
+                }
+                //If the parent container is an overflow <div> with scrollbars, subtract the scroll offsets.
+                //You need to also add any offset between the <svg> element and its containing <div>
+                //Finally, add any offset of the containing <div> on the whole page.
+                left += chartContainer.offsetLeft + svgOffset.left - 2*chartContainer.scrollLeft;
+                top += chartContainer.offsetTop + svgOffset.top - 2*chartContainer.scrollTop;
+            }
+
+            if (snapDistance && snapDistance > 0) {
+                top = Math.floor(top/snapDistance) * snapDistance;
+            }
+
+            nv.tooltip.calcTooltipPosition([left,top], gravity, distance, container);
+            return nvtooltip;
+        };
+
+        nvtooltip.nvPointerEventsClass = nvPointerEventsClass;
+        
+        nvtooltip.content = function(_) {
+            if (!arguments.length) return content;
+            content = _;
+            return nvtooltip;
+        };
+
+        //Returns tooltipElem...not able to set it.
+        nvtooltip.tooltipElem = function() {
+            return tooltipElem;
+        };
+
+        nvtooltip.contentGenerator = function(_) {
+            if (!arguments.length) return contentGenerator;
+            if (typeof _ === 'function') {
+                contentGenerator = _;
+            }
+            return nvtooltip;
+        };
+
+        nvtooltip.data = function(_) {
+            if (!arguments.length) return data;
+            data = _;
+            return nvtooltip;
+        };
+
+        nvtooltip.gravity = function(_) {
+            if (!arguments.length) return gravity;
+            gravity = _;
+            return nvtooltip;
+        };
+
+        nvtooltip.distance = function(_) {
+            if (!arguments.length) return distance;
+            distance = _;
+            return nvtooltip;
+        };
+
+        nvtooltip.snapDistance = function(_) {
+            if (!arguments.length) return snapDistance;
+            snapDistance = _;
+            return nvtooltip;
+        };
+
+        nvtooltip.classes = function(_) {
+            if (!arguments.length) return classes;
+            classes = _;
+            return nvtooltip;
+        };
+
+        nvtooltip.chartContainer = function(_) {
+            if (!arguments.length) return chartContainer;
+            chartContainer = _;
+            return nvtooltip;
+        };
+
+        nvtooltip.position = function(_) {
+            if (!arguments.length) return position;
+            position.left = (typeof _.left !== 'undefined') ? _.left : position.left;
+            position.top = (typeof _.top !== 'undefined') ? _.top : position.top;
+            return nvtooltip;
+        };
+
+        nvtooltip.fixedTop = function(_) {
+            if (!arguments.length) return fixedTop;
+            fixedTop = _;
+            return nvtooltip;
+        };
+
+        nvtooltip.enabled = function(_) {
+            if (!arguments.length) return enabled;
+            enabled = _;
+            return nvtooltip;
+        };
+
+        nvtooltip.valueFormatter = function(_) {
+            if (!arguments.length) return valueFormatter;
+            if (typeof _ === 'function') {
+                valueFormatter = _;
+            }
+            return nvtooltip;
+        };
+
+        nvtooltip.headerFormatter = function(_) {
+            if (!arguments.length) return headerFormatter;
+            if (typeof _ === 'function') {
+                headerFormatter = _;
+            }
+            return nvtooltip;
+        };
+
+        //id() is a read-only function. You can't use it to set the id.
+        nvtooltip.id = function() {
+            return id;
+        };
+
+
+        return nvtooltip;
+  };
+
+
+  //Original tooltip.show function. Kept for backward compatibility.
+  // pos = [left,top]
+  nv.tooltip.show = function(pos, content, gravity, dist, parentContainer, classes) {
+      
+        //Create new tooltip div if it doesn't exist on DOM.
+        var   container = document.createElement('div');
+        container.className = 'nvtooltip ' + (classes ? classes : 'xy-tooltip');
+
+        var body = parentContainer;
+        if ( !parentContainer || parentContainer.tagName.match(/g|svg/i)) {
+            //If the parent element is an SVG element, place tooltip in the <body> element.
+            body = document.getElementsByTagName('body')[0];
+        }
+   
+        container.style.left = 0;
+        container.style.top = 0;
+        container.style.opacity = 0;
+        container.innerHTML = content;
+        body.appendChild(container);
+        
+        //If the parent container is an overflow <div> with scrollbars, subtract the scroll offsets.
+        if (parentContainer) {
+           pos[0] = pos[0] - parentContainer.scrollLeft;
+           pos[1] = pos[1] - parentContainer.scrollTop;
+        }
+        nv.tooltip.calcTooltipPosition(pos, gravity, dist, container);
+  };
+
+  //Looks up the ancestry of a DOM element, and returns the first NON-svg node.
+  nv.tooltip.findFirstNonSVGParent = function(Elem) {
+            while(Elem.tagName.match(/^g|svg$/i) !== null) {
+                Elem = Elem.parentNode;
+            }
+            return Elem;
+  };
+
+  //Finds the total offsetTop of a given DOM element.
+  //Looks up the entire ancestry of an element, up to the first relatively positioned element.
+  nv.tooltip.findTotalOffsetTop = function ( Elem, initialTop ) {
+                var offsetTop = initialTop;
+                
+                do {
+                    if( !isNaN( Elem.offsetTop ) ) {
+                        offsetTop += (Elem.offsetTop);
+                    }
+                } while( Elem = Elem.offsetParent );
+                return offsetTop;
+  };
+
+  //Finds the total offsetLeft of a given DOM element.
+  //Looks up the entire ancestry of an element, up to the first relatively positioned element.
+  nv.tooltip.findTotalOffsetLeft = function ( Elem, initialLeft) {
+                var offsetLeft = initialLeft;
+                
+                do {
+                    if( !isNaN( Elem.offsetLeft ) ) {
+                        offsetLeft += (Elem.offsetLeft);
+                    }
+                } while( Elem = Elem.offsetParent );
+                return offsetLeft;
+  };
+
+  //Global utility function to render a tooltip on the DOM.
+  //pos = [left,top] coordinates of where to place the tooltip, relative to the SVG chart container.
+  //gravity = how to orient the tooltip
+  //dist = how far away from the mouse to place tooltip
+  //container = tooltip DIV
+  nv.tooltip.calcTooltipPosition = function(pos, gravity, dist, container) {
+
+            var height = parseInt(container.offsetHeight),
+                width = parseInt(container.offsetWidth),
+                windowWidth = nv.utils.windowSize().width,
+                windowHeight = nv.utils.windowSize().height,
+                scrollTop = window.pageYOffset,
+                scrollLeft = window.pageXOffset,
+                left, top;
+
+            windowHeight = window.innerWidth >= document.body.scrollWidth ? windowHeight : windowHeight - 16;
+            windowWidth = window.innerHeight >= document.body.scrollHeight ? windowWidth : windowWidth - 16;
+
+            gravity = gravity || 's';
+            dist = dist || 20;
+
+            var tooltipTop = function ( Elem ) {
+                return nv.tooltip.findTotalOffsetTop(Elem, top);
+            };
+
+            var tooltipLeft = function ( Elem ) {
+                return nv.tooltip.findTotalOffsetLeft(Elem,left);
+            };
+
+            switch (gravity) {
+              case 'e':
+                left = pos[0] - width - dist;
+                top = pos[1] - (height / 2);
+                var tLeft = tooltipLeft(container);
+                var tTop = tooltipTop(container);
+                if (tLeft < scrollLeft) left = pos[0] + dist > scrollLeft ? pos[0] + dist : scrollLeft - tLeft + left;
+                if (tTop < scrollTop) top = scrollTop - tTop + top;
+                if (tTop + height > scrollTop + windowHeight) top = scrollTop + windowHeight - tTop + top - height;
+                break;
+              case 'w':
+                left = pos[0] + dist;
+                top = pos[1] - (height / 2);
+                var tLeft = tooltipLeft(container);
+                var tTop = tooltipTop(container);
+                if (tLeft + width > windowWidth) left = pos[0] - width - dist;
+                if (tTop < scrollTop) top = scrollTop + 5;
+                if (tTop + height > scrollTop + windowHeight) top = scrollTop + windowHeight - tTop + top - height;
+                break;
+              case 'n':
+                left = pos[0] - (width / 2) - 5;
+                top = pos[1] + dist;
+                var tLeft = tooltipLeft(container);
+                var tTop = tooltipTop(container);
+                if (tLeft < scrollLeft) left = scrollLeft + 5;
+                if (tLeft + width > windowWidth) left = left - width/2 + 5;
+                if (tTop + height > scrollTop + windowHeight) top = scrollTop + windowHeight - tTop + top - height;
+                break;
+              case 's':
+                left = pos[0] - (width / 2);
+                top = pos[1] - height - dist;
+                var tLeft = tooltipLeft(container);
+                var tTop = tooltipTop(container);
+                if (tLeft < scrollLeft) left = scrollLeft + 5;
+                if (tLeft + width > windowWidth) left = left - width/2 + 5;
+                if (scrollTop > tTop) top = scrollTop;
+                break;
+              case 'none':
+                left = pos[0];
+                top = pos[1] - dist;
+                var tLeft = tooltipLeft(container);
+                var tTop = tooltipTop(container);
+                break;
+            }
+
+
+            container.style.left = left+'px';
+            container.style.top = top+'px';
+            container.style.opacity = 1;
+            container.style.position = 'absolute'; 
+
+            return container;
+    };
+
+    //Global utility function to remove tooltips from the DOM.
+    nv.tooltip.cleanup = function() {
+
+              // Find the tooltips, mark them for removal by this class (so others cleanups won't find it)
+              var tooltips = document.getElementsByClassName('nvtooltip');
+              var purging = [];
+              while(tooltips.length) {
+                purging.push(tooltips[0]);
+                tooltips[0].style.transitionDelay = '0 !important';
+                tooltips[0].style.opacity = 0;
+                tooltips[0].className = 'nvtooltip-pending-removal';
+              }
+
+              setTimeout(function() {
+
+                  while (purging.length) {
+                     var removeMe = purging.pop();
+                      removeMe.parentNode.removeChild(removeMe);
+                  }
+            }, 500);
+    };
+
+})();
 
 nv.utils.windowSize = function() {
     // Sane defaults
@@ -2388,6 +3128,680 @@ nv.models.pieChart = function() {
   chart.noData = function(_) {
     if (!arguments.length) return noData;
     noData = _;
+    return chart;
+  };
+
+  //============================================================
+
+
+  return chart;
+}
+
+nv.models.scatter = function() {
+  "use strict";
+  //============================================================
+  // Public Variables with Default Settings
+  //------------------------------------------------------------
+
+  var margin       = {top: 0, right: 0, bottom: 0, left: 0}
+    , width        = 960
+    , height       = 500
+    , color        = nv.utils.defaultColor() // chooses color
+    , id           = Math.floor(Math.random() * 100000) //Create semi-unique ID incase user doesn't select one
+    , x            = d3.scale.linear()
+    , y            = d3.scale.linear()
+    , z            = d3.scale.linear() //linear because d3.svg.shape.size is treated as area
+    , getX         = function(d) { return d.x } // accessor to get the x value
+    , getY         = function(d) { return d.y } // accessor to get the y value
+    , getSize      = function(d) { return d.size || 1} // accessor to get the point size
+    , getShape     = function(d) { return d.shape || 'circle' } // accessor to get point shape
+    , onlyCircles  = true // Set to false to use shapes
+    , forceX       = [] // List of numbers to Force into the X scale (ie. 0, or a max / min, etc.)
+    , forceY       = [] // List of numbers to Force into the Y scale
+    , forceSize    = [] // List of numbers to Force into the Size scale
+    , interactive  = true // If true, plots a voronoi overlay for advanced point intersection
+    , pointKey     = null
+    , pointActive  = function(d) { return !d.notActive } // any points that return false will be filtered out
+    , padData      = false // If true, adds half a data points width to front and back, for lining up a line chart with a bar chart
+    , padDataOuter = .1 //outerPadding to imitate ordinal scale outer padding
+    , clipEdge     = false // if true, masks points within x and y scale
+    , clipVoronoi  = true // if true, masks each point with a circle... can turn off to slightly increase performance
+    , clipRadius   = function() { return 25 } // function to get the radius for voronoi point clips
+    , xDomain      = null // Override x domain (skips the calculation from data)
+    , yDomain      = null // Override y domain
+    , xRange       = null // Override x range
+    , yRange       = null // Override y range
+    , sizeDomain   = null // Override point size domain
+    , sizeRange    = null
+    , singlePoint  = false
+    , dispatch     = d3.dispatch('elementClick', 'elementMouseover', 'elementMouseout')
+    , useVoronoi   = true
+    ;
+
+  //============================================================
+
+
+  //============================================================
+  // Private Variables
+  //------------------------------------------------------------
+
+  var x0, y0, z0 // used to store previous scales
+    , timeoutID
+    , needsUpdate = false // Flag for when the points are visually updating, but the interactive layer is behind, to disable tooltips
+    ;
+
+  //============================================================
+
+
+  function chart(selection) {
+    selection.each(function(data) {
+      var availableWidth = width - margin.left - margin.right,
+          availableHeight = height - margin.top - margin.bottom,
+          container = d3.select(this);
+
+      //add series index to each data point for reference
+      data.forEach(function(series, i) {
+        series.values.forEach(function(point) {
+          point.series = i;
+        });
+      });
+
+      //------------------------------------------------------------
+      // Setup Scales
+
+      // remap and flatten the data for use in calculating the scales' domains
+      var seriesData = (xDomain && yDomain && sizeDomain) ? [] : // if we know xDomain and yDomain and sizeDomain, no need to calculate.... if Size is constant remember to set sizeDomain to speed up performance
+            d3.merge(
+              data.map(function(d) {
+                return d.values.map(function(d,i) {
+                  return { x: getX(d,i), y: getY(d,i), size: getSize(d,i) }
+                })
+              })
+            );
+
+      x   .domain(xDomain || d3.extent(seriesData.map(function(d) { return d.x; }).concat(forceX)))
+
+      if (padData && data[0])
+        x.range(xRange || [(availableWidth * padDataOuter +  availableWidth) / (2 *data[0].values.length), availableWidth - availableWidth * (1 + padDataOuter) / (2 * data[0].values.length)  ]);
+        //x.range([availableWidth * .5 / data[0].values.length, availableWidth * (data[0].values.length - .5)  / data[0].values.length ]);
+      else
+        x.range(xRange || [0, availableWidth]);
+
+      y   .domain(yDomain || d3.extent(seriesData.map(function(d) { return d.y }).concat(forceY)))
+          .range(yRange || [availableHeight, 0]);
+
+      z   .domain(sizeDomain || d3.extent(seriesData.map(function(d) { return d.size }).concat(forceSize)))
+          .range(sizeRange || [16, 256]);
+
+      // If scale's domain don't have a range, slightly adjust to make one... so a chart can show a single data point
+      if (x.domain()[0] === x.domain()[1] || y.domain()[0] === y.domain()[1]) singlePoint = true;
+      if (x.domain()[0] === x.domain()[1])
+        x.domain()[0] ?
+            x.domain([x.domain()[0] - x.domain()[0] * 0.01, x.domain()[1] + x.domain()[1] * 0.01])
+          : x.domain([-1,1]);
+
+      if (y.domain()[0] === y.domain()[1])
+        y.domain()[0] ?
+            y.domain([y.domain()[0] - y.domain()[0] * 0.01, y.domain()[1] + y.domain()[1] * 0.01])
+          : y.domain([-1,1]);
+
+      if ( isNaN(x.domain()[0])) {
+          x.domain([-1,1]);
+      }
+
+      if ( isNaN(y.domain()[0])) {
+          y.domain([-1,1]);
+      }
+
+
+      x0 = x0 || x;
+      y0 = y0 || y;
+      z0 = z0 || z;
+
+      //------------------------------------------------------------
+
+
+      //------------------------------------------------------------
+      // Setup containers and skeleton of chart
+
+      var wrap = container.selectAll('g.nv-wrap.nv-scatter').data([data]);
+      var wrapEnter = wrap.enter().append('g').attr('class', 'nvd3 nv-wrap nv-scatter nv-chart-' + id + (singlePoint ? ' nv-single-point' : ''));
+      var defsEnter = wrapEnter.append('defs');
+      var gEnter = wrapEnter.append('g');
+      var g = wrap.select('g');
+
+      gEnter.append('g').attr('class', 'nv-groups');
+      gEnter.append('g').attr('class', 'nv-point-paths');
+
+      wrap.attr('transform', 'translate(' + margin.left + ',' + margin.top + ')');
+
+      //------------------------------------------------------------
+
+
+      defsEnter.append('clipPath')
+          .attr('id', 'nv-edge-clip-' + id)
+        .append('rect');
+
+      wrap.select('#nv-edge-clip-' + id + ' rect')
+          .attr('width', availableWidth)
+          .attr('height', (availableHeight > 0) ? availableHeight : 0);
+
+      g   .attr('clip-path', clipEdge ? 'url(#nv-edge-clip-' + id + ')' : '');
+
+
+      function updateInteractiveLayer() {
+
+        if (!interactive) return false;
+
+        var eventElements;
+
+        var vertices = d3.merge(data.map(function(group, groupIndex) {
+            return group.values
+              .map(function(point, pointIndex) {
+                // *Adding noise to make duplicates very unlikely
+                // *Injecting series and point index for reference
+                /* *Adding a 'jitter' to the points, because there's an issue in d3.geom.voronoi.
+                */
+                var pX = getX(point,pointIndex);
+                var pY = getY(point,pointIndex);
+
+                return [x(pX)+ Math.random() * 1e-7,
+                        y(pY)+ Math.random() * 1e-7,
+                        groupIndex,
+                        pointIndex, point]; //temp hack to add noise untill I think of a better way so there are no duplicates
+              })
+              .filter(function(pointArray, pointIndex) {
+                return pointActive(pointArray[4], pointIndex); // Issue #237.. move filter to after map, so pointIndex is correct!
+              })
+          })
+        );
+
+
+
+        //inject series and point index for reference into voronoi
+        if (useVoronoi === true) {
+
+          if (clipVoronoi) {
+            var pointClipsEnter = wrap.select('defs').selectAll('.nv-point-clips')
+                .data([id])
+              .enter();
+
+            pointClipsEnter.append('clipPath')
+                  .attr('class', 'nv-point-clips')
+                  .attr('id', 'nv-points-clip-' + id);
+
+            var pointClips = wrap.select('#nv-points-clip-' + id).selectAll('circle')
+                .data(vertices);
+            pointClips.enter().append('circle')
+                .attr('r', clipRadius);
+            pointClips.exit().remove();
+            pointClips
+                .attr('cx', function(d) { return d[0] })
+                .attr('cy', function(d) { return d[1] });
+
+            wrap.select('.nv-point-paths')
+                .attr('clip-path', 'url(#nv-points-clip-' + id + ')');
+          }
+
+
+          if(vertices.length) {
+            // Issue #283 - Adding 2 dummy points to the voronoi b/c voronoi requires min 3 points to work
+            vertices.push([x.range()[0] - 20, y.range()[0] - 20, null, null]);
+            vertices.push([x.range()[1] + 20, y.range()[1] + 20, null, null]);
+            vertices.push([x.range()[0] - 20, y.range()[0] + 20, null, null]);
+            vertices.push([x.range()[1] + 20, y.range()[1] - 20, null, null]);
+          }
+
+          var bounds = d3.geom.polygon([
+              [-10,-10],
+              [-10,height + 10],
+              [width + 10,height + 10],
+              [width + 10,-10]
+          ]);
+
+          var voronoi = d3.geom.voronoi(vertices).map(function(d, i) {
+              return {
+                'data': bounds.clip(d),
+                'series': vertices[i][2],
+                'point': vertices[i][3]
+              }
+            });
+
+
+          var pointPaths = wrap.select('.nv-point-paths').selectAll('path')
+              .data(voronoi);
+          pointPaths.enter().append('path')
+              .attr('class', function(d,i) { return 'nv-path-'+i; });
+          pointPaths.exit().remove();
+          pointPaths
+              .attr('d', function(d) {
+                if (d.data.length === 0)
+                    return 'M 0 0'
+                else
+                    return 'M' + d.data.join('L') + 'Z';
+              });
+
+          var mouseEventCallback = function(d,mDispatch) {
+                if (needsUpdate) return 0;
+                var series = data[d.series];
+                if (typeof series === 'undefined') return;
+
+                var point  = series.values[d.point];
+
+                mDispatch({
+                  point: point,
+                  series: series,
+                  pos: [x(getX(point, d.point)) + margin.left, y(getY(point, d.point)) + margin.top],
+                  seriesIndex: d.series,
+                  pointIndex: d.point
+                });
+          };
+
+          pointPaths
+              .on('click', function(d) {
+                mouseEventCallback(d, dispatch.elementClick);
+              })
+              .on('mouseover', function(d) {
+                mouseEventCallback(d, dispatch.elementMouseover);
+              })
+              .on('mouseout', function(d, i) {
+                mouseEventCallback(d, dispatch.elementMouseout);
+              });
+
+
+        } else {
+          /*
+          // bring data in form needed for click handlers
+          var dataWithPoints = vertices.map(function(d, i) {
+              return {
+                'data': d,
+                'series': vertices[i][2],
+                'point': vertices[i][3]
+              }
+            });
+           */
+
+          // add event handlers to points instead voronoi paths
+          wrap.select('.nv-groups').selectAll('.nv-group')
+            .selectAll('.nv-point')
+              //.data(dataWithPoints)
+              //.style('pointer-events', 'auto') // recativate events, disabled by css
+              .on('click', function(d,i) {
+                //nv.log('test', d, i);
+                if (needsUpdate || !data[d.series]) return 0; //check if this is a dummy point
+                var series = data[d.series],
+                    point  = series.values[i];
+
+                dispatch.elementClick({
+                  point: point,
+                  series: series,
+                  pos: [x(getX(point, i)) + margin.left, y(getY(point, i)) + margin.top],
+                  seriesIndex: d.series,
+                  pointIndex: i
+                });
+              })
+              .on('mouseover', function(d,i) {
+                if (needsUpdate || !data[d.series]) return 0; //check if this is a dummy point
+                var series = data[d.series],
+                    point  = series.values[i];
+
+                dispatch.elementMouseover({
+                  point: point,
+                  series: series,
+                  pos: [x(getX(point, i)) + margin.left, y(getY(point, i)) + margin.top],
+                  seriesIndex: d.series,
+                  pointIndex: i
+                });
+              })
+              .on('mouseout', function(d,i) {
+                if (needsUpdate || !data[d.series]) return 0; //check if this is a dummy point
+                var series = data[d.series],
+                    point  = series.values[i];
+
+                dispatch.elementMouseout({
+                  point: point,
+                  series: series,
+                  seriesIndex: d.series,
+                  pointIndex: i
+                });
+              });
+          }
+
+          needsUpdate = false;
+      }
+
+      needsUpdate = true;
+
+      var groups = wrap.select('.nv-groups').selectAll('.nv-group')
+          .data(function(d) { return d }, function(d) { return d.key });
+      groups.enter().append('g')
+          .style('stroke-opacity', 1e-6)
+          .style('fill-opacity', 1e-6);
+      groups.exit()
+          .remove();
+      groups
+          .attr('class', function(d,i) { return 'nv-group nv-series-' + i })
+          .classed('hover', function(d) { return d.hover });
+      groups
+          .transition()
+          .style('fill', function(d,i) { return color(d, i) })
+          .style('stroke', function(d,i) { return color(d, i) })
+          .style('stroke-opacity', 1)
+          .style('fill-opacity', .5);
+
+
+      if (onlyCircles) {
+
+        var points = groups.selectAll('circle.nv-point')
+            .data(function(d) { return d.values }, pointKey);
+        points.enter().append('circle')
+            .style('fill', function (d,i) { return d.color })
+            .style('stroke', function (d,i) { return d.color })
+            .attr('cx', function(d,i) { return nv.utils.NaNtoZero(x0(getX(d,i))) })
+            .attr('cy', function(d,i) { return nv.utils.NaNtoZero(y0(getY(d,i))) })
+            .attr('r', function(d,i) { return Math.sqrt(z(getSize(d,i))/Math.PI) });
+        points.exit().remove();
+        groups.exit().selectAll('path.nv-point').transition()
+            .attr('cx', function(d,i) { return nv.utils.NaNtoZero(x(getX(d,i))) })
+            .attr('cy', function(d,i) { return nv.utils.NaNtoZero(y(getY(d,i))) })
+            .remove();
+        points.each(function(d,i) {
+          d3.select(this)
+            .classed('nv-point', true)
+            .classed('nv-point-' + i, true)
+            .classed('hover',false)
+            ;
+        });
+        points.transition()
+            .attr('cx', function(d,i) { return nv.utils.NaNtoZero(x(getX(d,i))) })
+            .attr('cy', function(d,i) { return nv.utils.NaNtoZero(y(getY(d,i))) })
+            .attr('r', function(d,i) { return Math.sqrt(z(getSize(d,i))/Math.PI) });
+
+      } else {
+
+        var points = groups.selectAll('path.nv-point')
+            .data(function(d) { return d.values });
+        points.enter().append('path')
+            .style('fill', function (d,i) { return d.color })
+            .style('stroke', function (d,i) { return d.color })
+            .attr('transform', function(d,i) {
+              return 'translate(' + x0(getX(d,i)) + ',' + y0(getY(d,i)) + ')'
+            })
+            .attr('d',
+              d3.svg.symbol()
+                .type(getShape)
+                .size(function(d,i) { return z(getSize(d,i)) })
+            );
+        points.exit().remove();
+        groups.exit().selectAll('path.nv-point')
+            .transition()
+            .attr('transform', function(d,i) {
+              return 'translate(' + x(getX(d,i)) + ',' + y(getY(d,i)) + ')'
+            })
+            .remove();
+        points.each(function(d,i) {
+          d3.select(this)
+            .classed('nv-point', true)
+            .classed('nv-point-' + i, true)
+            .classed('hover',false)
+            ;
+        });
+        points.transition()
+            .attr('transform', function(d,i) {
+              //nv.log(d,i,getX(d,i), x(getX(d,i)));
+              return 'translate(' + x(getX(d,i)) + ',' + y(getY(d,i)) + ')'
+            })
+            .attr('d',
+              d3.svg.symbol()
+                .type(getShape)
+                .size(function(d,i) { return z(getSize(d,i)) })
+            );
+      }
+
+
+      // Delay updating the invisible interactive layer for smoother animation
+      clearTimeout(timeoutID); // stop repeat calls to updateInteractiveLayer
+      timeoutID = setTimeout(updateInteractiveLayer, 300);
+      //updateInteractiveLayer();
+
+      //store old scales for use in transitions on update
+      x0 = x.copy();
+      y0 = y.copy();
+      z0 = z.copy();
+
+    });
+
+    return chart;
+  }
+
+
+  //============================================================
+  // Event Handling/Dispatching (out of chart's scope)
+  //------------------------------------------------------------
+  chart.clearHighlights = function() {
+      //Remove the 'hover' class from all highlighted points.
+      d3.selectAll(".nv-chart-" + id + " .nv-point.hover").classed("hover",false);
+  };
+
+  chart.highlightPoint = function(seriesIndex,pointIndex,isHoverOver) {
+      d3.select(".nv-chart-" + id + " .nv-series-" + seriesIndex + " .nv-point-" + pointIndex)
+          .classed("hover",isHoverOver);
+  };
+
+
+  dispatch.on('elementMouseover.point', function(d) {
+     if (interactive) chart.highlightPoint(d.seriesIndex,d.pointIndex,true);
+  });
+
+  dispatch.on('elementMouseout.point', function(d) {
+     if (interactive) chart.highlightPoint(d.seriesIndex,d.pointIndex,false);
+  });
+
+  //============================================================
+
+
+  //============================================================
+  // Expose Public Variables
+  //------------------------------------------------------------
+
+  chart.dispatch = dispatch;
+  chart.options = nv.utils.optionsFunc.bind(chart);
+
+  chart.x = function(_) {
+    if (!arguments.length) return getX;
+    getX = d3.functor(_);
+    return chart;
+  };
+
+  chart.y = function(_) {
+    if (!arguments.length) return getY;
+    getY = d3.functor(_);
+    return chart;
+  };
+
+  chart.size = function(_) {
+    if (!arguments.length) return getSize;
+    getSize = d3.functor(_);
+    return chart;
+  };
+
+  chart.margin = function(_) {
+    if (!arguments.length) return margin;
+    margin.top    = typeof _.top    != 'undefined' ? _.top    : margin.top;
+    margin.right  = typeof _.right  != 'undefined' ? _.right  : margin.right;
+    margin.bottom = typeof _.bottom != 'undefined' ? _.bottom : margin.bottom;
+    margin.left   = typeof _.left   != 'undefined' ? _.left   : margin.left;
+    return chart;
+  };
+
+  chart.width = function(_) {
+    if (!arguments.length) return width;
+    width = _;
+    return chart;
+  };
+
+  chart.height = function(_) {
+    if (!arguments.length) return height;
+    height = _;
+    return chart;
+  };
+
+  chart.xScale = function(_) {
+    if (!arguments.length) return x;
+    x = _;
+    return chart;
+  };
+
+  chart.yScale = function(_) {
+    if (!arguments.length) return y;
+    y = _;
+    return chart;
+  };
+
+  chart.zScale = function(_) {
+    if (!arguments.length) return z;
+    z = _;
+    return chart;
+  };
+
+  chart.xDomain = function(_) {
+    if (!arguments.length) return xDomain;
+    xDomain = _;
+    return chart;
+  };
+
+  chart.yDomain = function(_) {
+    if (!arguments.length) return yDomain;
+    yDomain = _;
+    return chart;
+  };
+
+  chart.sizeDomain = function(_) {
+    if (!arguments.length) return sizeDomain;
+    sizeDomain = _;
+    return chart;
+  };
+
+  chart.xRange = function(_) {
+    if (!arguments.length) return xRange;
+    xRange = _;
+    return chart;
+  };
+
+  chart.yRange = function(_) {
+    if (!arguments.length) return yRange;
+    yRange = _;
+    return chart;
+  };
+
+  chart.sizeRange = function(_) {
+    if (!arguments.length) return sizeRange;
+    sizeRange = _;
+    return chart;
+  };
+
+  chart.forceX = function(_) {
+    if (!arguments.length) return forceX;
+    forceX = _;
+    return chart;
+  };
+
+  chart.forceY = function(_) {
+    if (!arguments.length) return forceY;
+    forceY = _;
+    return chart;
+  };
+
+  chart.forceSize = function(_) {
+    if (!arguments.length) return forceSize;
+    forceSize = _;
+    return chart;
+  };
+
+  chart.interactive = function(_) {
+    if (!arguments.length) return interactive;
+    interactive = _;
+    return chart;
+  };
+
+  chart.pointKey = function(_) {
+    if (!arguments.length) return pointKey;
+    pointKey = _;
+    return chart;
+  };
+
+  chart.pointActive = function(_) {
+    if (!arguments.length) return pointActive;
+    pointActive = _;
+    return chart;
+  };
+
+  chart.padData = function(_) {
+    if (!arguments.length) return padData;
+    padData = _;
+    return chart;
+  };
+
+  chart.padDataOuter = function(_) {
+    if (!arguments.length) return padDataOuter;
+    padDataOuter = _;
+    return chart;
+  };
+
+  chart.clipEdge = function(_) {
+    if (!arguments.length) return clipEdge;
+    clipEdge = _;
+    return chart;
+  };
+
+  chart.clipVoronoi= function(_) {
+    if (!arguments.length) return clipVoronoi;
+    clipVoronoi = _;
+    return chart;
+  };
+
+  chart.useVoronoi= function(_) {
+    if (!arguments.length) return useVoronoi;
+    useVoronoi = _;
+    if (useVoronoi === false) {
+        clipVoronoi = false;
+    }
+    return chart;
+  };
+
+  chart.clipRadius = function(_) {
+    if (!arguments.length) return clipRadius;
+    clipRadius = _;
+    return chart;
+  };
+
+  chart.color = function(_) {
+    if (!arguments.length) return color;
+    color = nv.utils.getColor(_);
+    return chart;
+  };
+
+  chart.shape = function(_) {
+    if (!arguments.length) return getShape;
+    getShape = _;
+    return chart;
+  };
+
+  chart.onlyCircles = function(_) {
+    if (!arguments.length) return onlyCircles;
+    onlyCircles = _;
+    return chart;
+  };
+
+  chart.id = function(_) {
+    if (!arguments.length) return id;
+    id = _;
+    return chart;
+  };
+
+  chart.singlePoint = function(_) {
+    if (!arguments.length) return singlePoint;
+    singlePoint = _;
     return chart;
   };
 
